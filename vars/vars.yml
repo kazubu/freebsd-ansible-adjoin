@@ -1,0 +1,7 @@
+---
+ad_domain: example.jp
+ad_ou: OU=Servers, DC=example, DC=jp
+ad_user: "{{ vault_ad_user }}"
+ad_user_password: "{{ vault_ad_user_password }}"
+ad_sudo_group: "sudoers"
+

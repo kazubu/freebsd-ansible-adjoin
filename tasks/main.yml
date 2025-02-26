@@ -1,0 +1,223 @@
+---
+  - name: Load Secrets
+    include_vars: "secrets.yml"
+
+  - name: Load Variables
+    include_vars: "vars.yml"
+
+  - name: Install AD related packages
+    become: yes
+    community.general.pkgng:
+      name:
+        - adcli
+        - dbus
+        - sssd2
+        - realmd
+        - pam_mkhomedir
+        - py311-pexpect
+
+  - name: Enable sssd
+    become: yes
+    community.general.sysrc:
+      name: sssd_enable
+      value: "YES"
+      state: present
+
+  - name: Enable dbus
+    become: yes
+    community.general.sysrc:
+      name: dbus_enable
+      value: "YES"
+      state: present
+
+  - name: Start dbus
+    become: yes
+    service:
+      name: dbus
+      state: started
+
+  - name: Checking to see if system is already joined to AD
+    become: yes
+    command: /bin/sh -c "/usr/local/sbin/realm list"
+    register: realm_list_results
+    tags: ad
+
+  - name: Join system to AD
+    expect:
+      command: /bin/sh -c "/usr/local/sbin/realm join {{ ad_domain }} --computer-ou='{{ ad_ou }}' --user={{ ad_user }}"
+      responses:
+        (?i)Password: "{{ ad_user_password }}"
+    ignore_errors: yes
+    when: realm_list_results.stdout == ""
+    become: true
+    notify: sssd-restart
+    tags: ad
+
+  - name: Enable SSH integration in sssd
+    become: yes
+    community.general.ini_file:
+      path: /usr/local/etc/sssd/sssd.conf
+      section: sssd
+      option: services
+      value: "nss, pam, ssh"
+      mode: '0600'
+      state: present
+    notify: sssd-restart
+
+  - name: Use short homedir in sssd
+    become: yes
+    community.general.ini_file:
+      path: /usr/local/etc/sssd/sssd.conf
+      section: "domain/{{ ad_domain }}"
+      option: fallback_homedir
+      value: "/home/%u"
+      mode: '0600'
+      state: present
+    notify: sssd-restart
+
+  - name: No FQDN in sssd
+    become: yes
+    community.general.ini_file:
+      path: /usr/local/etc/sssd/sssd.conf
+      section: "domain/{{ ad_domain }}"
+      option: use_fully_qualified_names
+      value: "False"
+      mode: '0600'
+      state: present
+    notify: sssd-restart
+
+  - name: Set SSH Public Key LDAP attribute name in sssd
+    become: yes
+    community.general.ini_file:
+      path: /usr/local/etc/sssd/sssd.conf
+      section: "domain/{{ ad_domain }}"
+      option: ldap_user_ssh_public_key
+      value: "sshPublicKey"
+      mode: '0600'
+      state: present
+    notify: sssd-restart
+
+  - name: Disable global catalog in sssd
+    become: yes
+    community.general.ini_file:
+      path: /usr/local/etc/sssd/sssd.conf
+      section: "domain/{{ ad_domain }}"
+      option: ad_enable_gc
+      value: "False"
+      mode: '0600'
+      state: present
+    notify: sssd-restart
+
+  - name: Start sssd
+    become: yes
+    service:
+      name: sssd
+      state: started
+
+  - name: Enable pam_sss in pam.d system auth
+    become: yes
+    community.general.pamd:
+      name: system
+      type: auth
+      control: required
+      module_path: pam_unix.so
+      new_type: auth
+      new_control: sufficient
+      new_module_path: /usr/local/lib/pam_sss.so
+      module_arguments: 'no_warn forward_pass'
+      state: before
+
+  - name: Enable pam_sss in pam.d system session
+    become: yes
+    community.general.pamd:
+      name: system
+      type: account
+      control: required
+      module_path: pam_unix.so
+      new_type: account
+      new_control: required
+      new_module_path: /usr/local/lib/pam_sss.so
+      module_arguments: 'no_warn ignore_authinfo_unavail ignore_unknown_user'
+      state: before
+
+  - name: Enable pam_mkhomedir in pam.d system session
+    become: yes
+    community.general.pamd:
+      name: system
+      type: session
+      control: required
+      module_path: pam_lastlog.so
+      new_type: session
+      new_control: required
+      new_module_path: /usr/local/lib/pam_mkhomedir.so
+      state: before
+
+  - name: Enable pam_sss in pam.d sshd auth
+    become: yes
+    community.general.pamd:
+      name: sshd
+      type: auth
+      control: required
+      module_path: pam_unix.so
+      new_type: auth
+      new_control: sufficient
+      new_module_path: /usr/local/lib/pam_sss.so
+      module_arguments: 'no_warn forward_pass'
+      state: before
+
+  - name: Enable pam_sss in pam.d sshd account
+    become: yes
+    community.general.pamd:
+      name: sshd
+      type: account
+      control: required
+      module_path: pam_unix.so
+      new_type: account
+      new_control: required
+      new_module_path: /usr/local/lib/pam_sss.so
+      module_arguments: 'no_warn ignore_authinfo_unavail ignore_unknown_user'
+      state: before
+
+  - name: Enable pam_mkhomedir in pam.d sshd session
+    become: yes
+    community.general.pamd:
+      name: sshd
+      type: session
+      control: required
+      module_path: pam_permit.so
+      new_type: session
+      new_control: required
+      new_module_path: /usr/local/lib/pam_mkhomedir.so
+      state: before
+
+
+  - name: Enable sss in nsswitch group
+    become: true
+    ansible.builtin.lineinfile:
+      path: /etc/nsswitch.conf
+      regex: ^(group:)
+      line: "group: files sss"
+
+  - name: Enable sss in nsswitch passwd
+    become: true
+    ansible.builtin.lineinfile:
+      path: /etc/nsswitch.conf
+      regex: ^(passwd:)
+      line: "passwd: files sss"
+
+  - name: Enable sudo for AD group
+    become: yes
+    copy:
+      dest: "/usr/local/etc/sudoers.d/{{ ad_sudo_group }}"
+      mode: 0600
+      content: "%{{ ad_sudo_group  }} ALL=(ALL) ALL"
+
+  - name: Configure to ssh pubkey get from AD
+    become: yes
+    copy:
+      dest: /etc/ssh/sshd_config.d/sssd-sshkey
+      mode: 0600
+      content: |
+        AuthorizedKeysCommand /usr/local/bin/sss_ssh_authorizedkeys
+        AuthorizedKeysCommandUser nobody
+    notify: sshd-restart

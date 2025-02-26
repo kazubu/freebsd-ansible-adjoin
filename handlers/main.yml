@@ -1,0 +1,12 @@
+---
+- name: sssd-restart
+  become: yes
+  service:
+    name: sssd
+    state: restarted
+
+- name: sshd-restart
+  become: yes
+  service:
+    name: sshd
+    state: restarted
